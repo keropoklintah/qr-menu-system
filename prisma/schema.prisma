@@ -1,0 +1,281 @@
+// ============================================================================
+// QR MENU MANAGEMENT SYSTEM — DATABASE SCHEMA
+// ORM: Prisma  |  DB: PostgreSQL (Supabase-compatible)
+// ============================================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ----------------------------------------------------------------------------
+// TENANT ROOT
+// Every table hangs off Restaurant so the schema is multi-tenant / multi-branch
+// ready from day one (see docs/ARCHITECTURE.md "Future Expansion").
+// ----------------------------------------------------------------------------
+model Restaurant {
+  id        String   @id @default(cuid())
+  slug      String   @unique // used in public URL: /menu/[slug]
+  name      String
+  logoUrl   String?
+  themeColor      String  @default("#E63946")
+  themeColorDark  String  @default("#1D1D1D")
+
+  contactPhone    String?
+  contactEmail    String?
+  address         String?
+
+  // JSON so future days/hours format can evolve without a migration
+  operatingHours  Json?   // { mon: {open, close, closed}, tue: {...}, ... }
+  socialLinks     Json?   // { facebook, instagram, whatsapp, tiktok, website }
+
+  currency        String  @default("MYR")
+  isActive        Boolean @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  adminUsers  AdminUser[]
+  categories  Category[]
+  menuItems   MenuItem[]
+  promotions  Promotion[]
+  branches    Branch[]
+  qrCodes     QrCode[]
+
+  @@map("restaurants")
+}
+
+// ----------------------------------------------------------------------------
+// AUTH
+// ----------------------------------------------------------------------------
+enum AdminRole {
+  OWNER
+  MANAGER
+  STAFF
+}
+
+model AdminUser {
+  id           String    @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         AdminRole @default(STAFF)
+  isActive     Boolean   @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("admin_users")
+}
+
+// ----------------------------------------------------------------------------
+// CATEGORY MANAGEMENT
+// ----------------------------------------------------------------------------
+model Category {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  name       String
+  slug       String
+  icon       String?     // emoji or icon key, e.g. "🍔"
+  sortOrder  Int         @default(0)
+  isActive   Boolean     @default(true)
+
+  menuItems  MenuItem[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([restaurantId, slug])
+  @@map("categories")
+}
+
+// ----------------------------------------------------------------------------
+// MENU ITEMS
+// ----------------------------------------------------------------------------
+model MenuItem {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  categoryId String
+  category   Category @relation(fields: [categoryId], references: [id])
+
+  name             String
+  description      String?
+  imageUrl         String?
+  price            Decimal  @db.Decimal(10, 2)
+  discountedPrice  Decimal? @db.Decimal(10, 2)
+
+  isHot        Boolean @default(false) // "Hot Item" badge
+  isNew        Boolean @default(false) // "New" badge
+  isBestseller Boolean @default(false)
+  isAvailable  Boolean @default(true)  // Out Of Stock toggle (inverse)
+
+  sortOrder Int @default(0)
+
+  // Future: inventory linkage, kitchen station routing, calorie/allergen info
+  tags       String[] @default([]) // e.g. ["spicy","vegan","halal"]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  promotions PromotionItem[]
+
+  @@index([restaurantId, categoryId])
+  @@map("menu_items")
+}
+
+// ----------------------------------------------------------------------------
+// PROMOTIONS / COUPONS
+// ----------------------------------------------------------------------------
+enum DiscountType {
+  PERCENT
+  FIXED_AMOUNT
+}
+
+model Promotion {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  name          String
+  description   String?
+  discountType  DiscountType
+  discountValue Decimal      @db.Decimal(10, 2)
+  couponCode    String?      @unique
+
+  startDate DateTime
+  endDate   DateTime
+  isActive  Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  items PromotionItem[]
+
+  @@map("promotions")
+}
+
+// join table: a promotion can apply to many menu items, an item to many promos
+model PromotionItem {
+  id          String   @id @default(cuid())
+  promotionId String
+  promotion   Promotion @relation(fields: [promotionId], references: [id], onDelete: Cascade)
+  menuItemId  String
+  menuItem    MenuItem  @relation(fields: [menuItemId], references: [id], onDelete: Cascade)
+
+  @@unique([promotionId, menuItemId])
+  @@map("promotion_items")
+}
+
+// ----------------------------------------------------------------------------
+// QR CODE MANAGEMENT
+// ----------------------------------------------------------------------------
+model QrCode {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  label      String   @default("Main Menu") // e.g. "Table 5", "Front Door"
+  targetUrl  String   // always points at /menu/[slug] (optionally ?table=)
+  branchId   String?
+  branch     Branch?  @relation(fields: [branchId], references: [id])
+
+  createdAt DateTime @default(now())
+
+  @@map("qr_codes")
+}
+
+// ----------------------------------------------------------------------------
+// FUTURE EXPANSION — MULTI-BRANCH (implemented now so relations are ready)
+// ----------------------------------------------------------------------------
+model Branch {
+  id           String     @id @default(cuid())
+  restaurantId String
+  restaurant   Restaurant @relation(fields: [restaurantId], references: [id], onDelete: Cascade)
+
+  name    String
+  address String?
+  phone   String?
+
+  qrCodes QrCode[]
+
+  createdAt DateTime @default(now())
+
+  @@map("branches")
+}
+
+// ----------------------------------------------------------------------------
+// FUTURE EXPANSION — TABLES ORDERING / ONLINE ORDERING / KDS / PAYMENTS
+// These are intentionally NOT implemented in the UI yet, but modeled here so
+// adding the features later is an additive migration, not a redesign.
+// Uncomment and run `prisma migrate dev` when ready to build these modules.
+// ----------------------------------------------------------------------------
+
+// model RestaurantTable {
+//   id           String   @id @default(cuid())
+//   restaurantId String
+//   branchId     String?
+//   number       String
+//   qrCodeId     String?
+//   orders       Order[]
+// }
+//
+// enum OrderStatus { PENDING CONFIRMED PREPARING READY SERVED PAID CANCELLED }
+//
+// model Order {
+//   id           String      @id @default(cuid())
+//   restaurantId String
+//   tableId      String?
+//   customerName String?
+//   customerPhone String?
+//   status       OrderStatus @default(PENDING)
+//   totalAmount  Decimal     @db.Decimal(10, 2)
+//   couponCode   String?
+//   items        OrderItem[]
+//   createdAt    DateTime    @default(now())
+// }
+//
+// model OrderItem {
+//   id         String   @id @default(cuid())
+//   orderId    String
+//   menuItemId String
+//   quantity   Int
+//   unitPrice  Decimal  @db.Decimal(10, 2)
+//   notes      String?
+// }
+//
+// model PaymentTransaction {
+//   id        String   @id @default(cuid())
+//   orderId   String
+//   provider  String   // "stripe" | "toyyibpay" | "billplz" ...
+//   amount    Decimal  @db.Decimal(10, 2)
+//   status    String
+//   createdAt DateTime @default(now())
+// }
+//
+// model InventoryItem {
+//   id           String  @id @default(cuid())
+//   restaurantId String
+//   name         String
+//   unit         String
+//   quantity     Decimal @db.Decimal(10, 2)
+//   lowStockAt   Decimal @db.Decimal(10, 2)
+// }
+//
+// model KitchenTicket {
+//   id        String   @id @default(cuid())
+//   orderId   String
+//   station   String   // "grill" | "drinks" | "dessert"
+//   status    String   // "queued" | "in_progress" | "done"
+//   createdAt DateTime @default(now())
+// }
